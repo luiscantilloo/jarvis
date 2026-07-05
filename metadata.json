@@ -1,0 +1,6 @@
+{
+  "name": "Jarvis AI Desktop Assistant",
+  "description": "An immersive, modular, and voice-activated desktop assistant inspired by Iron Man's Jarvis, featuring a virtual sandbox filesystem, a multi-agent developer network, real-time diagnostics, and full speech-to-text control.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
