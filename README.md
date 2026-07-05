@@ -1,20 +1,47 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# J.A.R.V.I.S. Mk V Ultra — Asistente de IA de Escritorio
 
-# Run and deploy your AI Studio app
+Asistente de escritorio inmersivo con temática Iron Man, potenciado por Gemini, Ollama (local), o modo offline completo.
 
-This contains everything you need to run your app locally.
+## Características Mk V
 
-View your app in AI Studio: https://ai.studio/apps/18198c32-be41-46da-9527-fd6782cf0226
+- **WebSocket en tiempo real** — Métricas de CPU/RAM actualizadas cada 2 segundos sin polling
+- **Soporte Ollama** — LLM local sin internet (`llama3`, `mistral`, etc.)
+- **Acceso real al sistema** — Procesos reales, disco real, red real, explorador de archivos del host
+- **Comandos seguros del OS** — Lista blanca de comandos reales ejecutables desde la UI
+- **Historial de conversación** — Contexto persistente enviado a Gemini/Ollama
+- **Markdown renderizado** — Respuestas con formato real, no texto plano
+- **Workflows persistentes** — Guardados en JSON, sobreviven reinicios
+- **Nueva pestaña "SISTEMA REAL"** — Procesos, interfaces de red, explorador de archivos, comandos reales
+- **Rate limiting y headers de seguridad** — Helmet + express-rate-limit
 
-## Run Locally
+## Inicio rápido
 
-**Prerequisites:**  Node.js
+```bash
+npm install
 
+# Crea .env con tu API key (ver .env.example)
+cp .env.example .env
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+npm run dev   # Servidor en http://localhost:3000
+```
+
+## Modos de IA
+
+1. **Gemini (online)** — Configura `GEMINI_API_KEY` en `.env`
+2. **Ollama (offline local)** — Instala [Ollama](https://ollama.ai) + `ollama pull llama3`
+3. **Modo offline** — Sin configuración, con respuestas locales inteligentes
+
+## Comandos de voz
+
+- `"Jarvis"` — Activa modo de charla continua hands-free
+- `"Escúchame"` — Comando único por voz
+- `"Para"` / `"Stop"` — Detiene el modo manos libres
+
+## Scripts
+
+```bash
+npm run dev     # Desarrollo con HMR
+npm run build   # Build de producción
+npm run start   # Servidor de producción
+npm run lint    # Verificación de tipos TypeScript
+```

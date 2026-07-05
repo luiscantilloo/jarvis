@@ -6,3 +6,7 @@ coverage/
 *.log
 .env*
 !.env.example
+src/data/chat-history.json
+src/data/memory-facts.json
+src/data/virtual-fs.json
+src/data/workflows.json

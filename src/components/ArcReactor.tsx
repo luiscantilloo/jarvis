@@ -137,7 +137,7 @@ export default function ArcReactor({ state, onClick }: ArcReactorProps) {
         </p>
         <span className="font-mono text-[10px] text-gray-500 block mt-1 tracking-wider">
           {state === 'idle' && 'PRESIONE EL NÚCLEO PARA HABLAR'}
-          {state === 'listening' && 'ESCUNCHANDO COMANDO DE VOZ...'}
+          {state === 'listening' && 'ESCUCHANDO COMANDO DE VOZ...'}
           {state === 'thinking' && 'CALCULANDO COGNICIÓN RED...'}
           {state === 'speaking' && 'JARVIS RETROALIMENTANDO...'}
           {state === 'processing' && 'SINTETIZANDO CÓDIGO FUENTE...'}

@@ -1,16 +1,19 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Terminal, Cpu, Database, Disc, Activity, Zap, Play, Trash2, Plus, 
   ToggleLeft, ToggleRight, Mic, MicOff, Volume2, VolumeX, Send, 
-  FolderOpen, FileText, Code2, Save, Users, Sparkles, HelpCircle, 
-  Music, Pause, SkipForward, RefreshCw, AlertTriangle, ShieldCheck,
-  Monitor, Laptop, CheckCircle2, Sliders, PlayCircle, XCircle, Search, Power, Camera
+  FolderOpen, FileText, Code2, Save, Users, Sparkles,
+  RefreshCw, AlertTriangle,
+  Monitor, Laptop, Sliders,
+  Camera, Globe, HardDrive, Network, ChevronRight, ChevronUp, Cpu as CpuIcon
 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import ArcReactor from './components/ArcReactor';
 import SystemMeters from './components/SystemMeters';
-import { VirtualFile, Agent, AgentMessage, LogEntry, WorkflowRule, MemoryFact } from './types';
+import { VirtualFile, Agent, AgentMessage, LogEntry, WorkflowRule, MemoryFact, ChatMessage, ChatReply, RealProcess, FileBrowseResult, NetworkInterface } from './types';
 
-type ActiveTab = 'core' | 'pc_control' | 'agents' | 'workspace';
+type ActiveTab = 'core' | 'pc_control' | 'agents' | 'workspace' | 'system_real';
 
 export default function App() {
   // Navigation
@@ -36,6 +39,22 @@ export default function App() {
     isHandsFreeActiveRef.current = val;
   };
 
+  // Conversation history for context
+  const [conversationHistory, setConversationHistory] = useState<ChatMessage[]>([]);
+
+  // WebSocket for real-time metrics
+  const wsRef = useRef<WebSocket | null>(null);
+  const [wsMetrics, setWsMetrics] = useState<{ cpu: number; ram: number; ramTotal: number; ramPercent: number; loadAvg: string[] } | null>(null);
+  const [wsConnected, setWsConnected] = useState(false);
+
+  // Real system data
+  const [realProcesses, setRealProcesses] = useState<RealProcess[]>([]);
+  const [networkInterfaces, setNetworkInterfaces] = useState<NetworkInterface[]>([]);
+  const [fileBrowse, setFileBrowse] = useState<FileBrowseResult | null>(null);
+  const [browsePath, setBrowsePath] = useState('');
+  const [execOutput, setExecOutput] = useState('');
+  const [execLoading, setExecLoading] = useState(false);
+
   // PC simulated environment
   const [pcProcesses, setPcProcesses] = useState([
     { pid: 1044, name: 'Spotify.exe', cpu: 1.2, ram: 180, active: true },
@@ -50,6 +69,7 @@ export default function App() {
     diskAccess: true,
     processControl: true,
     volumeAutomation: true,
+    voiceAutomation: true,
     scriptInjections: true
   });
   const [pcConsoleLogs, setPcConsoleLogs] = useState<string[]>([
@@ -88,7 +108,7 @@ export default function App() {
       timestamp: new Date().toLocaleTimeString()
     }
   ]);
-  const [chatReply, setChatReply] = useState<{ text: string; speech: string } | null>({
+  const [chatReply, setChatReply] = useState<ChatReply | null>({
     text: "He completado la reorganización del panel holográfico. Los subsistemas de su computadora están enlazados. Ahora cuento con acceso completo a sus procesos, captura de pantalla y consola local, Señor.",
     speech: "Buenos días, Señor. Todos los sistemas y su computadora están enlazados."
   });
@@ -125,6 +145,8 @@ export default function App() {
     fetchVFS();
     fetchMemories();
     fetchWorkflows();
+    fetchRealProcesses();
+    fetchNetworkInterfaces();
 
     // Clock
     const timer = setInterval(() => {
@@ -135,6 +157,50 @@ export default function App() {
     return () => {
       clearInterval(timer);
       stopAudioDrone();
+    };
+  }, []);
+
+  // WebSocket connection for real-time metrics
+  useEffect(() => {
+    const connectWS = () => {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/ws`;
+      try {
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          setWsConnected(true);
+          addLog('[WS] Stream de métricas en tiempo real conectado.', 'success');
+        };
+
+        ws.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data.type === 'metrics') {
+              setWsMetrics({ cpu: data.cpu, ram: data.ram, ramTotal: data.ramTotal, ramPercent: data.ramPercent, loadAvg: data.loadAvg });
+            }
+          } catch {}
+        };
+
+        ws.onclose = () => {
+          setWsConnected(false);
+          wsRef.current = null;
+          // Reconnect after 5s
+          setTimeout(connectWS, 5000);
+        };
+
+        ws.onerror = () => {
+          ws.close();
+        };
+      } catch {
+        setTimeout(connectWS, 8000);
+      }
+    };
+
+    connectWS();
+    return () => {
+      if (wsRef.current) { wsRef.current.close(); }
     };
   }, []);
 
@@ -477,6 +543,50 @@ export default function App() {
     }
   };
 
+  // Real system data fetchers
+  const fetchRealProcesses = async () => {
+    try {
+      const res = await fetch('/api/processes');
+      if (res.ok) setRealProcesses(await res.json());
+    } catch {}
+  };
+
+  const fetchNetworkInterfaces = async () => {
+    try {
+      const res = await fetch('/api/network');
+      if (res.ok) setNetworkInterfaces(await res.json());
+    } catch {}
+  };
+
+  const browseFilesystem = async (targetPath: string) => {
+    try {
+      setBrowsePath(targetPath);
+      const res = await fetch(`/api/browse?path=${encodeURIComponent(targetPath)}`);
+      if (res.ok) setFileBrowse(await res.json());
+    } catch (err: any) {
+      addLog(`Error explorando ${targetPath}: ${err.message}`, 'error');
+    }
+  };
+
+  const execSafeCommand = async (command: string) => {
+    setExecLoading(true);
+    setExecOutput('');
+    try {
+      const res = await fetch('/api/exec', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command })
+      });
+      const data = await res.json();
+      setExecOutput(data.output || data.error || '(sin salida)');
+      addLog(`[EXEC] Comando '${command}' ejecutado.`, data.success ? 'success' : 'warning');
+    } catch (err: any) {
+      setExecOutput(`Error: ${err.message}`);
+    } finally {
+      setExecLoading(false);
+    }
+  };
+
   // PC local command terminal simulator
   const executePcCommand = (cmd: string = '') => {
     const targetCmd = (cmd || pcConsoleInput).trim();
@@ -495,32 +605,67 @@ export default function App() {
       let response: string[] = [];
       if (command === 'help') {
         response = [
-          'Comandos de control del Computador de Tony Stark:',
-          '  sysinfo          - Ver especificaciones físicas completas del hardware.',
-          '  processes        - Listar los programas activos en memoria con CPU y RAM.',
-          '  kill <pid|name>  - Terminar un programa de forma permanente.',
-          '  launch <name>    - Abrir un nuevo programa y reservar recursos.',
-          '  screenshot       - Tomar una captura de pantalla del escritorio.',
-          '  disk_scan        - Analizar y optimizar espacio ocupado en disco.',
-          '  cpu_stress       - Forzar carga de procesamiento para pruebas de tolerancia.',
-          '  clear            - Limpiar consola de sistema.'
+          'Comandos de control del Computador Jarvis Mk V:',
+          '  sysinfo          - Ver especificaciones REALES del hardware del host.',
+          '  processes        - Listar procesos REALES activos (top CPU).',
+          '  realprocs        - Recargar lista de procesos reales del OS.',
+          '  network          - Ver interfaces de red reales del host.',
+          '  kill <pid|name>  - Terminar un proceso simulado.',
+          '  launch <name>    - Lanzar un proceso simulado.',
+          '  screenshot       - Captura de pantalla holográfica.',
+          '  disk_scan        - Analizar espacio en disco real.',
+          '  cpu_stress       - Test de estrés de CPU.',
+          '  clear            - Limpiar consola.'
         ];
       } else if (command === 'sysinfo') {
+        // Show REAL system info
+        const fetchAndShowSysinfo = async () => {
+          try {
+            const res = await fetch('/api/exec', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: 'cpu_info' }) });
+            const data = await res.json();
+            setPcConsoleLogs(prev => [...prev, '[INFO REAL DEL HOST]', ...data.output.split('\n').slice(0, 10).map((l: string) => `  ${l}`)]);
+          } catch {}
+        };
+        fetchAndShowSysinfo();
         response = [
-          '[INFO DISPOSITIVO] S.O.: JarvisLink v4.4 (Windows 11 Stark-Custom Core)',
-          '[INFO DISPOSITIVO] CPU: Intel Core i9-16900KS Stark-Overclocked @ 6.4 GHz',
-          '[INFO DISPOSITIVO] Cores: 24 Cores Físicos / 32 Hilos de Ejecución',
-          '[INFO DISPOSITIVO] RAM: 64 GB DDR5 @ 8400 MHz (Canal Cuántico Certificado)',
-          '[INFO DISPOSITIVO] GPU: NVIDIA RTX 6090 Ti Stark-Edition (48GB GDDR7 VRAM)',
-          '[INFO DISPOSITIVO] Unidad: SSD NVMe Stark-Vault 8TB (Lectura: 14,200 MB/s)',
-          '[ESTADO TÉRMICO] Temperatura CPU: 42°C | GPU: 38°C (Refrigeración Líquida: OK)'
+          '[SOLICITANDO INFO REAL DEL HOST...]',
+          '[HOST] Plataforma: ' + window.navigator.platform,
+          '[HOST] User Agent: ' + window.navigator.userAgent.split('(')[1]?.split(')')[0] || 'N/A',
         ];
+      } else if (command === 'realprocs') {
+        fetchRealProcesses().then(() => {
+          setPcConsoleLogs(prev => [...prev,
+            '[PROCESOS REALES DEL HOST]',
+            'PID\tNOMBRE\t\t\tCPU\tRAM',
+            '─'.repeat(50),
+            ...realProcesses.slice(0, 15).map(p => `${p.pid}\t${p.name.substring(0, 20).padEnd(20)}\t${p.cpu.toFixed(1)}%\t${p.ram}MB`)
+          ]);
+        });
+        response = ['[ACTUALIZANDO PROCESOS REALES DEL HOST...]'];
+      } else if (command === 'network') {
+        fetchNetworkInterfaces().then(() => {
+          setPcConsoleLogs(prev => [...prev,
+            '[INTERFACES DE RED REALES]',
+            ...networkInterfaces.map(ni => `  ${ni.name.padEnd(10)} ${ni.address.padEnd(16)} ${ni.internal ? '(loopback)' : '(externa)'}`)
+          ]);
+        });
+        response = ['[OBTENIENDO INTERFACES DE RED REALES...]'];
       } else if (command === 'processes') {
-        response = [
-          'PID\tPROCESO\t\tCPU\tRAM (MB)\tESTADO',
-          '-------------------------------------------------------',
-          ...pcProcesses.map(p => `${p.pid}\t${p.name.padEnd(16)}\t${p.active ? p.cpu : '0.0'}%\t${p.active ? p.ram : '0'}\t${p.active ? 'EJECUTÁNDOSE' : 'INACTIVO'}`)
-        ];
+        // Show real processes if available, else simulated
+        if (realProcesses.length > 0) {
+          response = [
+            '[PROCESOS REALES DEL HOST]',
+            'PID\tNOMBRE\t\t\t\tCPU\tRAM(MB)',
+            '─'.repeat(60),
+            ...realProcesses.slice(0, 15).map(p => `${String(p.pid).padEnd(7)}\t${p.name.substring(0, 22).padEnd(22)}\t${p.cpu.toFixed(1)}%\t${p.ram}MB`)
+          ];
+        } else {
+          response = [
+            'PID\tPROCESO\t\tCPU\tRAM (MB)\tESTADO',
+            '─'.repeat(55),
+            ...pcProcesses.map(p => `${p.pid}\t${p.name.padEnd(16)}\t${p.active ? p.cpu : '0.0'}%\t${p.active ? p.ram : '0'}\t${p.active ? 'EJECUTÁNDOSE' : 'INACTIVO'}`)
+          ];
+        }
       } else if (command === 'kill') {
         if (!argument) {
           response = ['Error: Especifique el PID o el nombre del proceso a terminar. Ej: kill Chrome.exe'];
@@ -647,16 +792,22 @@ export default function App() {
     addLog(`[SEÑOR]: ${promptToSend}`, 'system');
     setReactorState('thinking');
 
+    // Add to history before request
+    const newHistory: ChatMessage[] = [...conversationHistory, { role: 'user', content: promptToSend, timestamp: new Date().toISOString() }];
+    setConversationHistory(newHistory);
+
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: promptToSend })
+        body: JSON.stringify({ prompt: promptToSend, history: newHistory.slice(-8) })
       });
 
       if (res.ok) {
         const reply = await res.json();
-        setChatReply({ text: reply.text, speech: reply.speech, acting_agent: reply.acting_agent });
+        setChatReply({ text: reply.text, speech: reply.speech, acting_agent: reply.acting_agent, aiSource: reply.aiSource });
+        // Update history with assistant reply
+        setConversationHistory(prev => [...prev, { role: 'assistant', content: reply.text, timestamp: new Date().toISOString() }]);
         
         addLog(`[JARVIS]: ${reply.speech}`, 'success');
         speakText(reply.speech);
@@ -701,11 +852,26 @@ export default function App() {
             addLog(`Archivo '${reply.params.path}' inyectado en el sandbox virtual.`, 'success');
             fetchVFS();
             setActiveTab('workspace'); // Move to workspace tab to edit code
+          } else if (reply.action === 'delete_file' && reply.params?.path) {
+            await fetch('/api/virtual-fs', {
+              method: 'DELETE',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ path: reply.params.path })
+            });
+            addLog(`Archivo '${reply.params.path}' eliminado por orden de Jarvis.`, 'warning');
+            fetchVFS();
+            setActiveTab('workspace');
           } else if (reply.action === 'run_code' && reply.params?.path) {
             handleRunCode(reply.params.path);
             setActiveTab('workspace');
           } else if (reply.action === 'add_memory' && reply.params?.fact) {
             fetchMemories();
+          } else if (reply.action === 'exec_command' && reply.params?.command) {
+            setActiveTab('system_real');
+            await execSafeCommand(reply.params.command);
+          } else if (reply.action === 'browse_files' && reply.params?.path) {
+            setActiveTab('system_real');
+            await browseFilesystem(reply.params.path);
           } else if (reply.action === 'spotify') {
             if (!isPlayingMusic) {
               startAudioDrone();
@@ -1063,8 +1229,14 @@ export default function App() {
             <h1 className="text-xl font-bold tracking-tight text-slate-100 flex items-center gap-2">
               J.A.R.V.I.S.
               <span className="text-[9px] bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 px-1.5 py-0.5 rounded uppercase tracking-widest">
-                Stark Link v4.2
+                Mk V Ultra
               </span>
+              {wsConnected && (
+                <span className="text-[8px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded flex items-center gap-1">
+                  <span className="w-1 h-1 bg-emerald-400 rounded-full animate-ping" />
+                  WS LIVE
+                </span>
+              )}
             </h1>
             <p className="text-[8px] text-cyan-500/60 uppercase tracking-widest leading-none">Holographic Computer & Reactor Controller</p>
           </div>
@@ -1147,6 +1319,17 @@ export default function App() {
         >
           <FolderOpen className="w-4 h-4" />
           VFS Y COMPILADOR
+        </button>
+        <button 
+          onClick={() => { setActiveTab('system_real'); playSystemBeep(520, 0.05); fetchRealProcesses(); fetchNetworkInterfaces(); }}
+          className={`flex items-center gap-2 px-4 py-2 border rounded-lg text-xs font-bold tracking-widest transition-all cursor-pointer ${
+            activeTab === 'system_real' 
+            ? 'bg-emerald-500/20 border-emerald-400 text-emerald-100 shadow-[0_0_15px_rgba(16,185,129,0.15)]' 
+            : 'border-emerald-500/20 text-emerald-400/60 bg-[#040914]/40 hover:text-emerald-300 hover:bg-emerald-950/20'
+          }`}
+        >
+          <CpuIcon className="w-4 h-4" />
+          SISTEMA REAL
         </button>
       </nav>
 
@@ -1265,7 +1448,7 @@ export default function App() {
               {reactorState !== 'idle' && (
                 <div className="flex gap-1 justify-center items-center h-8 z-10 mt-1">
                   {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((bar) => {
-                    let h = reactorState === 'idle' ? '4px' : `${Math.floor(Math.random() * 25) + 5}px`;
+                    const h = `${Math.floor(Math.random() * 25) + 5}px`;
                     let speed = Math.random() * 0.5 + 0.3;
                     let color = 'bg-cyan-400';
                     if (reactorState === 'listening') color = 'bg-red-500';
@@ -1334,19 +1517,30 @@ export default function App() {
 
                     {chatReply ? (
                       <div className="space-y-2.5 overflow-y-auto max-h-[220px] scrollbar-thin">
-                        {chatReply.acting_agent && (
-                          <div className="flex items-center gap-1.5 self-start text-[8px] tracking-widest uppercase font-bold font-mono text-cyan-400 bg-cyan-950/40 border border-cyan-500/20 px-2 py-0.5 rounded-full inline-flex">
-                            <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" />
-                            Agente: {chatReply.acting_agent}
-                          </div>
-                        )}
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {chatReply.acting_agent && (
+                            <div className="text-[8px] tracking-widest uppercase font-bold font-mono text-cyan-400 bg-cyan-950/40 border border-cyan-500/20 px-2 py-0.5 rounded-full inline-flex items-center gap-1">
+                              <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" />
+                              Agente: {chatReply.acting_agent}
+                            </div>
+                          )}
+                          {chatReply.aiSource && (
+                            <div className={`text-[8px] uppercase font-bold px-2 py-0.5 rounded-full border ${
+                              chatReply.aiSource === 'gemini' ? 'text-cyan-300 bg-cyan-950/40 border-cyan-500/20' :
+                              chatReply.aiSource === 'ollama' ? 'text-purple-300 bg-purple-950/40 border-purple-500/20' :
+                              'text-slate-400 bg-slate-900/40 border-slate-700/20'
+                            }`}>
+                              {chatReply.aiSource === 'gemini' ? '✦ GEMINI' : chatReply.aiSource === 'ollama' ? '⬡ OLLAMA LOCAL' : '⬟ OFFLINE'}
+                            </div>
+                          )}
+                        </div>
                         <div className="bg-cyan-500/5 border-l-2 border-cyan-400 p-2 rounded-r">
                           <p className="italic text-cyan-100 text-xs font-sans leading-relaxed">
                             "{chatReply.speech}"
                           </p>
                         </div>
-                        <div className="bg-slate-900/30 border border-cyan-500/5 p-2 rounded text-[11px] font-mono text-slate-300 whitespace-pre-wrap leading-relaxed max-w-none">
-                          {chatReply.text}
+                        <div className="bg-slate-900/30 border border-cyan-500/5 p-2 rounded text-[11px] text-slate-300 leading-relaxed max-w-none prose prose-invert prose-sm max-w-none">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{chatReply.text}</ReactMarkdown>
                         </div>
                       </div>
                     ) : (
@@ -1358,30 +1552,22 @@ export default function App() {
                   <div className="border-t border-cyan-500/10 pt-2.5 mt-2">
                     <span className="text-[8px] text-cyan-500/40 uppercase font-bold block mb-1">Órdenes Preestablecidas rápidas:</span>
                     <div className="grid grid-cols-2 gap-1.5 text-[9px]">
-                      <button 
-                        onClick={() => handleChatSubmit("Inicia el reproductor y pon música de fondo.")}
-                        className="bg-cyan-500/5 hover:bg-cyan-500/15 border border-cyan-500/20 py-1 px-1.5 rounded text-left truncate text-cyan-300 text-[10px]"
-                      >
-                        Música de Fondo
-                      </button>
-                      <button 
-                        onClick={() => handleChatSubmit("Escanéa el reactor arc y mi computador.")}
-                        className="bg-cyan-500/5 hover:bg-cyan-500/15 border border-cyan-500/20 py-1 px-1.5 rounded text-left truncate text-cyan-300 text-[10px]"
-                      >
-                        Escanear Sistema
-                      </button>
-                      <button 
-                        onClick={() => handleChatSubmit("Abre la herramienta de Visual Studio Code.")}
-                        className="bg-cyan-500/5 hover:bg-cyan-500/15 border border-cyan-500/20 py-1 px-1.5 rounded text-left truncate text-cyan-300 text-[10px]"
-                      >
-                        Abrir VS Code
-                      </button>
-                      <button 
-                        onClick={() => handleChatSubmit("Saca una captura de pantalla holográfica del escritorio.")}
-                        className="bg-cyan-500/5 hover:bg-cyan-500/15 border border-cyan-500/20 py-1 px-1.5 rounded text-left truncate text-cyan-300 text-[10px]"
-                      >
-                        Capturar Pantalla
-                      </button>
+                      {[
+                        { label: 'Música de Fondo', cmd: 'Pon música de fondo.' },
+                        { label: 'Escanear Sistema', cmd: 'Escanea el sistema y el reactor arc.' },
+                        { label: 'Abrir VS Code', cmd: 'Abre Visual Studio Code.' },
+                        { label: 'Procesos del PC', cmd: 'Lista los procesos del sistema ordenados por CPU.' },
+                        { label: 'Info del CPU', cmd: 'Muéstrame la información real del procesador.' },
+                        { label: 'Explorar Archivos', cmd: 'Explora el directorio principal del host.' },
+                      ].map(({ label, cmd }) => (
+                        <button
+                          key={cmd}
+                          onClick={() => handleChatSubmit(cmd)}
+                          className="bg-cyan-500/5 hover:bg-cyan-500/15 border border-cyan-500/20 py-1 px-1.5 rounded text-left truncate text-cyan-300 text-[10px]"
+                        >
+                          {label}
+                        </button>
+                      ))}
                     </div>
                   </div>
                 </div>
@@ -1391,7 +1577,17 @@ export default function App() {
               <div className="bg-slate-950/80 border border-cyan-500/20 rounded-lg p-3 flex flex-col justify-between max-h-52 overflow-hidden">
                 <div className="flex items-center justify-between border-b border-cyan-500/10 pb-1 mb-1.5">
                   <span className="text-[9px] uppercase tracking-widest text-cyan-500/60 font-semibold">Terminal de Enlace Jarvis</span>
-                  <span className="text-[8px] bg-cyan-950 px-1 rounded text-cyan-400/40">AUDIT_SYS</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[8px] text-cyan-500/40">hist: {conversationHistory.length}</span>
+                    <button
+                      onClick={() => { setConversationHistory([]); addLog('[MEMORIA] Historial de conversación purgado.', 'warning'); }}
+                      className="text-[8px] text-red-400/50 hover:text-red-400"
+                      title="Purgar historial de conversación"
+                    >
+                      [PURGAR]
+                    </button>
+                    <span className="text-[8px] bg-cyan-950 px-1 rounded text-cyan-400/40">AUDIT_SYS</span>
+                  </div>
                 </div>
                 <div className="space-y-1 overflow-y-auto h-36 pr-1 text-[9px] leading-tight font-mono">
                   {mainTerminalLogs.map(log => {
@@ -1421,7 +1617,7 @@ export default function App() {
           <div className="flex-grow flex flex-col gap-3 h-full overflow-y-auto lg:overflow-hidden">
             {/* System Meters placed perfectly at the top of the PC Control tab! */}
             <div className="flex-shrink-0">
-              <SystemMeters />
+              <SystemMeters wsMetrics={wsMetrics} />
             </div>
             
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 flex-grow overflow-y-auto lg:overflow-hidden">
@@ -1907,6 +2103,165 @@ export default function App() {
                   <p className="text-center italic text-cyan-500/30 text-xs">Seleccione un archivo virtual a la izquierda para cargarlo en el visor holográfico.</p>
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* MODULE 5: SISTEMA REAL */}
+        {activeTab === 'system_real' && (
+          <div className="flex-grow grid grid-cols-1 lg:grid-cols-12 gap-4 h-full overflow-y-auto">
+
+            {/* Left: Real Processes */}
+            <div className="lg:col-span-4 flex flex-col gap-3">
+              <div className="bg-slate-950/60 border border-emerald-500/20 rounded-lg p-3">
+                <div className="flex items-center justify-between border-b border-emerald-500/10 pb-2 mb-2">
+                  <span className="text-[10px] uppercase font-bold tracking-wider flex items-center gap-1.5 text-emerald-300">
+                    <CpuIcon className="w-3.5 h-3.5" />
+                    Procesos Reales del Host
+                  </span>
+                  <button onClick={fetchRealProcesses} className="text-emerald-400 hover:text-emerald-300">
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div className="space-y-1 max-h-64 overflow-y-auto pr-1 text-[10px] font-mono">
+                  {realProcesses.length === 0 ? (
+                    <p className="text-center text-emerald-500/30 italic py-4">Cargando procesos reales...</p>
+                  ) : (
+                    realProcesses.slice(0, 20).map((p, idx) => (
+                      <div key={idx} className="flex justify-between items-center px-2 py-1 rounded bg-slate-900/40 border border-emerald-500/5 hover:border-emerald-500/20 transition-all">
+                        <div className="flex items-center gap-1.5 truncate max-w-[65%]">
+                          <span className="text-emerald-500/40 text-[9px]">{p.pid}</span>
+                          <span className="text-slate-200 truncate">{p.name}</span>
+                        </div>
+                        <div className="flex gap-2 text-[9px] shrink-0">
+                          <span className={p.cpu > 20 ? 'text-orange-400' : 'text-emerald-400'}>{p.cpu.toFixed(1)}%</span>
+                          <span className="text-slate-400">{p.ram}MB</span>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* Network Interfaces */}
+              <div className="bg-slate-950/60 border border-emerald-500/20 rounded-lg p-3">
+                <div className="flex items-center gap-1.5 border-b border-emerald-500/10 pb-2 mb-2">
+                  <Network className="w-3.5 h-3.5 text-emerald-400" />
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-300">Interfaces de Red</span>
+                </div>
+                <div className="space-y-1 text-[10px] font-mono">
+                  {networkInterfaces.length === 0 ? (
+                    <p className="text-center text-emerald-500/30 italic py-2">Cargando interfaces...</p>
+                  ) : (
+                    networkInterfaces.map((ni, idx) => (
+                      <div key={idx} className="flex justify-between items-center px-2 py-1 rounded bg-slate-900/40 border border-emerald-500/5">
+                        <span className={`font-bold ${ni.internal ? 'text-slate-400' : 'text-emerald-300'}`}>{ni.name}</span>
+                        <span className="text-slate-300">{ni.address}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Center: Safe Command Executor */}
+            <div className="lg:col-span-4 flex flex-col gap-3">
+              <div className="bg-slate-950/60 border border-emerald-500/20 rounded-lg p-3 flex flex-col">
+                <div className="flex items-center gap-1.5 border-b border-emerald-500/10 pb-2 mb-2">
+                  <Terminal className="w-3.5 h-3.5 text-emerald-400" />
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-300">Comandos Reales del Sistema</span>
+                  <span className="ml-auto text-[8px] text-emerald-500/50">WHITELIST_SAFE</span>
+                </div>
+                <p className="text-[9px] text-slate-400 font-sans mb-2">Ejecuta comandos reales en el host de forma segura (lista blanca). Jarvis puede ejecutarlos cuando dices "analiza el sistema", "muestra procesos", etc.</p>
+                <div className="grid grid-cols-2 gap-1 mb-3">
+                  {['uptime', 'hostname', 'free', 'df', 'top_cpu', 'top_ram', 'ifconfig', 'cpu_info', 'os_info', 'gpu_info', 'temperature', 'open_ports'].map(cmd => (
+                    <button
+                      key={cmd}
+                      onClick={() => execSafeCommand(cmd)}
+                      disabled={execLoading}
+                      className="bg-emerald-500/5 hover:bg-emerald-500/15 border border-emerald-500/20 py-1 px-2 rounded text-[9px] font-mono text-emerald-300 text-left truncate transition-all disabled:opacity-40"
+                    >
+                      {cmd}
+                    </button>
+                  ))}
+                </div>
+                <div className="bg-[#020a04] border border-emerald-500/10 rounded p-2 flex-grow min-h-40 max-h-64 overflow-y-auto">
+                  {execLoading ? (
+                    <div className="flex items-center gap-2 text-emerald-400 text-[10px]">
+                      <RefreshCw className="w-3 h-3 animate-spin" />
+                      Ejecutando...
+                    </div>
+                  ) : execOutput ? (
+                    <pre className="text-[9px] text-emerald-300 font-mono whitespace-pre-wrap leading-relaxed">{execOutput}</pre>
+                  ) : (
+                    <p className="text-[9px] text-emerald-500/30 italic">Seleccione un comando para ejecutarlo...</p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Right: Real Filesystem Browser */}
+            <div className="lg:col-span-4 flex flex-col gap-3">
+              <div className="bg-slate-950/60 border border-emerald-500/20 rounded-lg p-3 flex flex-col">
+                <div className="flex items-center gap-1.5 border-b border-emerald-500/10 pb-2 mb-2">
+                  <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-300">Explorador de Archivos Real</span>
+                </div>
+                <div className="flex gap-1 mb-2">
+                  <input
+                    type="text"
+                    value={browsePath}
+                    onChange={(e) => setBrowsePath(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && browseFilesystem(browsePath)}
+                    placeholder={`Ruta (ej. ~/Documents)`}
+                    className="flex-grow bg-[#020a04] text-emerald-100 text-[10px] border border-emerald-500/20 rounded px-2 py-1 focus:outline-none font-mono"
+                  />
+                  <button onClick={() => browseFilesystem(browsePath)} className="bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 px-2 rounded text-emerald-300">
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div className="flex gap-1 mb-2 flex-wrap">
+                  {['~', '/tmp', '/etc', '/var/log'].map(p => (
+                    <button key={p} onClick={() => browseFilesystem(p)} className="text-[8px] font-mono bg-emerald-500/5 border border-emerald-500/10 px-1.5 py-0.5 rounded text-emerald-400 hover:bg-emerald-500/10">
+                      {p}
+                    </button>
+                  ))}
+                </div>
+                {fileBrowse ? (
+                  <div className="space-y-0.5 max-h-72 overflow-y-auto text-[10px] font-mono">
+                    <div className="text-[8px] text-emerald-500/50 mb-1 px-1 truncate">{fileBrowse.path}</div>
+                    {fileBrowse.parent !== fileBrowse.path && (
+                      <div
+                        className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-emerald-500/10 cursor-pointer text-emerald-400"
+                        onClick={() => browseFilesystem(fileBrowse.parent)}
+                      >
+                        <ChevronUp className="w-3 h-3" />
+                        <span>..</span>
+                      </div>
+                    )}
+                    {fileBrowse.items.map((item, idx) => (
+                      <div
+                        key={idx}
+                        className={`flex items-center justify-between px-2 py-1 rounded hover:bg-emerald-500/5 cursor-pointer transition-all ${item.type === 'directory' ? 'text-emerald-300' : 'text-slate-300'}`}
+                        onClick={() => item.type === 'directory' && browseFilesystem(item.path)}
+                      >
+                        <div className="flex items-center gap-1.5 truncate max-w-[75%]">
+                          {item.type === 'directory' ? <FolderOpen className="w-3 h-3 shrink-0" /> : <FileText className="w-3 h-3 shrink-0" />}
+                          <span className="truncate">{item.name}</span>
+                        </div>
+                        {item.type === 'file' && (
+                          <span className="text-[9px] text-slate-500">{item.size > 1024 ? `${(item.size / 1024).toFixed(0)}KB` : `${item.size}B`}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex-grow flex items-center justify-center py-8 text-emerald-500/30 text-[10px] italic">
+                    <Globe className="w-6 h-6 mx-auto opacity-30 block mb-2" />
+                    Explore el sistema de archivos real del host.
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}
